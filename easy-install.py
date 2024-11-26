@@ -3,13 +3,11 @@
 import argparse
 import logging
 import os
-import platform
 import subprocess
 import sys
-import time
-import urllib.request
-from shutil import move, unpack_archive, which
+from shutil import move, unpack_archive
 from typing import Dict
+import urllib.request
 
 logging.basicConfig(
     filename="easy-install.log",
@@ -21,44 +19,34 @@ logging.basicConfig(
 # Default configurations
 PROD_CONFIG = {
     "site": "taywan.cloud",
-    "project": "taywan",  # Changed to lowercase
+    "project": "taywan",
     "email": "Amein@taywan.cloud"
 }
 
 DEV_CONFIG = {
     "site": "dev.taywan.cloud",
-    "project": "taywan-dev",  # Changed to lowercase with hyphen
+    "project": "taywan-dev",
     "email": "Amein@taywan.cloud"
 }
 
 def cprint(*args, level: int = 1):
-    """
-    logs colorful messages
-    level = 1 : RED
-    level = 2 : GREEN
-    level = 3 : YELLOW
-    """
     CRED = "\033[31m"
     CGRN = "\33[92m"
     CYLW = "\33[93m"
     reset = "\033[0m"
     message = " ".join(map(str, args))
-    if level == 1:
-        print(CRED, message, reset)
-    if level == 2:
-        print(CGRN, message, reset)
-    if level == 3:
-        print(CYLW, message, reset)
+    print(f"{[CRED, CGRN, CYLW][level-1]}{message}{reset}")
 
 def generate_pass(length: int = 12) -> str:
-    import math
     import secrets
-    if not length:
-        length = 56
-    return secrets.token_hex(math.ceil(length / 2))[:length]
+    return secrets.token_hex(length)
 
 def clone_frappe_docker_repo() -> None:
     try:
+        if os.path.exists("frappe_docker"):
+            cprint("Docker repo already exists", level=3)
+            return
+            
         urllib.request.urlretrieve(
             "https://github.com/frappe/frappe_docker/archive/refs/heads/main.zip",
             "frappe_docker.zip",
@@ -72,85 +60,81 @@ def clone_frappe_docker_repo() -> None:
         cprint("Cloning failed:", str(e), level=1)
         sys.exit(1)
 
-def write_to_env(wd: str, config: Dict) -> None:
-    """Write environment configuration for Postgres and multi-tenancy"""
-    db_pass = generate_pass(16)
-    admin_pass = generate_pass(16)
+def write_env_file(config: Dict) -> None:
+    db_pass = generate_pass()
+    redis_pass = generate_pass()
+    admin_pass = generate_pass()
     
-    with open(os.path.join(wd, ".env"), "w") as f:
-        f.writelines([
-            f"FRAPPE_VERSION=v15\n",
-            f"DB_TYPE=postgres\n",
-            f"DB_HOST=postgres\n",
-            f"DB_PORT=5432\n",
-            f"DB_NAME=postgres\n",
-            f"DB_PASSWORD={db_pass}\n",
-            f"DB_USER=postgres\n",
-            f"REDIS_CACHE=redis-cache:6379\n",
-            f"REDIS_QUEUE=redis-queue:6379\n",
-            f"REDIS_SOCKETIO=redis-socketio:6379\n",
-            f"REDIS_PASSWORD={generate_pass(16)}\n",
-            f"SITE_NAME={config['site']}\n",
-            f"SITES={config['site']}\n",
-            f"ADMIN_PASSWORD={admin_pass}\n",
-            f"LETSENCRYPT_EMAIL={config['email']}\n",
-            f"USE_SHARED_DB=1\n"
-        ])
+    env_content = f"""FRAPPE_VERSION=v15
+DB_HOST=postgres
+DB_PORT=5432
+DB_NAME=postgres
+DB_PASSWORD={db_pass}
+DB_USER=postgres
+DB_TYPE=postgres
+POSTGRES_HOST=postgres
+POSTGRES_PORT=5432
+POSTGRES_PASSWORD={db_pass}
+POSTGRES_USER=postgres
+POSTGRES_DB=postgres
+REDIS_CACHE=redis-cache:6379
+REDIS_QUEUE=redis-queue:6379
+REDIS_SOCKETIO=redis-socketio:6379
+REDIS_PASSWORD={redis_pass}
+SITE_NAME={config['site']}
+SITES='{config['site']}'
+ADMIN_PASSWORD={admin_pass}
+LETSENCRYPT_EMAIL={config['email']}
+USE_SHARED_DB=1
+"""
+    
+    with open("frappe_docker/.env", "w") as f:
+        f.write(env_content)
+        
+    # Save credentials
+    with open(os.path.expanduser("~/frappe_passwords.txt"), "w") as f:
+        f.write(f"""Site: {config['site']}
+Admin Password: {admin_pass}
+DB Password: {db_pass}
+Redis Password: {redis_pass}
+""")
 
 def setup_instance(is_prod: bool = True):
-    """Setup Frappe instance"""
     config = PROD_CONFIG if is_prod else DEV_CONFIG
-    
-    if not os.path.exists("frappe_docker"):
-        clone_frappe_docker_repo()
-    
-    docker_repo_path = os.path.join(os.getcwd(), "frappe_docker")
-    write_to_env(docker_repo_path, config)
-    
-    compose_file = os.path.join(os.path.expanduser("~"), f"{config['project']}-compose.yml")
+    clone_frappe_docker_repo()
+    write_env_file(config)
     
     try:
-        # Generate compose file
-        with open(compose_file, "w") as f:
-            subprocess.run([
-                "docker", "compose",
-                "--project-name", config['project'],
-                "-f", "compose.yaml",
-                "-f", "overrides/compose.postgres.yaml",
-                "-f", "overrides/compose.redis.yaml",
-                "-f", "overrides/compose.https.yaml",
-                "--env-file", ".env",
-                "config"
-            ], cwd=docker_repo_path, stdout=f, check=True)
-        
-        # Modify the compose file to use frappe images instead of erpnext
-        with open(compose_file, 'r') as f:
-            compose_content = f.read()
-        
-        compose_content = compose_content.replace('frappe/erpnext:', 'frappe/frappe:')
-        
-        with open(compose_file, 'w') as f:
-            f.write(compose_content)
-        
-        # Deploy
-        subprocess.run([
+        compose_commands = [
             "docker", "compose",
-            "-p", config['project'],
-            "-f", compose_file,
-            "up", "-d"
-        ], check=True)
+            "--project-name", config['project'],
+            "-f", "compose.yaml",
+            "-f", "overrides/compose.postgres.yaml",
+            "-f", "overrides/compose.redis.yaml"
+        ]
         
-        cprint(f"\nDeployment successful! Access your site at https://{config['site']}\n", level=2)
+        if is_prod:
+            compose_commands.extend(["-f", "overrides/compose.https.yaml"])
+            
+        compose_commands.extend(["--env-file", ".env", "up", "-d"])
+        
+        subprocess.run(compose_commands, cwd="frappe_docker", check=True)
+        
+        cprint(f"\nDeployment successful!", level=2)
+        cprint(f"Access your site at: {'https' if is_prod else 'http'}://{config['site']}", level=2)
         cprint("Credentials saved in ~/frappe_passwords.txt", level=3)
         
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Docker command failed: {e.stderr}", exc_info=True)
+        cprint(f"Setup failed: {e}", level=1)
+        sys.exit(1)
     except Exception as e:
         logging.error("Setup failed", exc_info=True)
-        cprint("Setup failed:", str(e), level=1)
+        cprint(f"Setup failed: {e}", level=1)
         sys.exit(1)
 
-
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Install Frappe with Docker")
+    parser = argparse.ArgumentParser(description="Install Frappe with PostgreSQL")
     parser.add_argument("-p", "--prod", help="Setup Production System", action="store_true")
     parser.add_argument("-d", "--dev", help="Setup Development System", action="store_true")
     
