@@ -21,13 +21,13 @@ logging.basicConfig(
 # Default configurations
 PROD_CONFIG = {
     "site": "taywan.cloud",
-    "project": "Taywan",
+    "project": "taywan",  # Changed to lowercase
     "email": "Amein@taywan.cloud"
 }
 
 DEV_CONFIG = {
     "site": "dev.taywan.cloud",
-    "project": "Taywan",
+    "project": "taywan-dev",  # Changed to lowercase with hyphen
     "email": "Amein@taywan.cloud"
 }
 
