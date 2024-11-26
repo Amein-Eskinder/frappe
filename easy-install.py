@@ -96,14 +96,6 @@ def write_to_env(wd: str, config: Dict) -> None:
             f"LETSENCRYPT_EMAIL={config['email']}\n",
             f"USE_SHARED_DB=1\n"
         ])
-    
-    # Save passwords
-    with open(os.path.join(os.path.expanduser("~"), "frappe_passwords.txt"), "w") as f:
-        f.writelines([
-            f"Site: {config['site']}\n",
-            f"Admin Password: {admin_pass}\n",
-            f"DB Password: {db_pass}\n"
-        ])
 
 def setup_instance(is_prod: bool = True):
     """Setup Frappe instance"""
@@ -131,6 +123,15 @@ def setup_instance(is_prod: bool = True):
                 "config"
             ], cwd=docker_repo_path, stdout=f, check=True)
         
+        # Modify the compose file to use frappe images instead of erpnext
+        with open(compose_file, 'r') as f:
+            compose_content = f.read()
+        
+        compose_content = compose_content.replace('frappe/erpnext:', 'frappe/frappe:')
+        
+        with open(compose_file, 'w') as f:
+            f.write(compose_content)
+        
         # Deploy
         subprocess.run([
             "docker", "compose",
@@ -146,6 +147,7 @@ def setup_instance(is_prod: bool = True):
         logging.error("Setup failed", exc_info=True)
         cprint("Setup failed:", str(e), level=1)
         sys.exit(1)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Install Frappe with Docker")
