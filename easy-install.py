@@ -60,6 +60,35 @@ def clone_frappe_docker_repo() -> None:
         cprint("Cloning failed:", str(e), level=1)
         sys.exit(1)
 
+def modify_compose_files():
+    """Modify compose files to use Frappe instead of ERPNext"""
+    files_to_modify = [
+        "frappe_docker/compose.yaml",
+        "frappe_docker/overrides/compose.postgres.yaml",
+        "frappe_docker/overrides/compose.redis.yaml",
+        "frappe_docker/overrides/compose.https.yaml"
+    ]
+    
+    replacements = {
+        "frappe/erpnext-worker": "frappe/frappe-worker",
+        "frappe/erpnext-nginx": "frappe/frappe-nginx",
+        "${ERPNEXT_VERSION}": "${FRAPPE_VERSION}",
+        "depends_on: erpnext-python": "depends_on: backend",
+        "erpnext-python": "backend",
+        "erpnext-socketio": "frappe-socketio"
+    }
+    
+    for file_path in files_to_modify:
+        if os.path.exists(file_path):
+            with open(file_path, 'r') as f:
+                content = f.read()
+            
+            for old, new in replacements.items():
+                content = content.replace(old, new)
+            
+            with open(file_path, 'w') as f:
+                f.write(content)
+
 def write_env_file(config: Dict) -> None:
     db_pass = generate_pass()
     redis_pass = generate_pass()
@@ -103,6 +132,7 @@ def setup_instance(is_prod: bool = True):
     config = PROD_CONFIG if is_prod else DEV_CONFIG
     clone_frappe_docker_repo()
     write_env_file(config)
+    modify_compose_files()
     
     try:
         compose_commands = [
@@ -118,14 +148,38 @@ def setup_instance(is_prod: bool = True):
             
         compose_commands.extend(["--env-file", ".env", "up", "-d"])
         
-        subprocess.run(compose_commands, cwd="frappe_docker", check=True)
+        # First, generate the compose file
+        compose_file = f"{os.path.expanduser('~')}/{config['project']}-compose.yml"
+        with open(compose_file, 'w') as f:
+            subprocess.run(
+                compose_commands[:-2] + ["config"],
+                cwd="frappe_docker",
+                stdout=f,
+                check=True
+            )
+        
+        # Read and modify the generated compose file
+        with open(compose_file, 'r') as f:
+            compose_content = f.read()
+        compose_content = compose_content.replace('frappe/erpnext:', 'frappe/frappe:')
+        compose_content = compose_content.replace('${ERPNEXT_VERSION}', '${FRAPPE_VERSION}')
+        with open(compose_file, 'w') as f:
+            f.write(compose_content)
+        
+        # Deploy using the modified compose file
+        subprocess.run([
+            "docker", "compose",
+            "-p", config['project'],
+            "-f", compose_file,
+            "up", "-d"
+        ], check=True)
         
         cprint(f"\nDeployment successful!", level=2)
         cprint(f"Access your site at: {'https' if is_prod else 'http'}://{config['site']}", level=2)
         cprint("Credentials saved in ~/frappe_passwords.txt", level=3)
         
     except subprocess.CalledProcessError as e:
-        logging.error(f"Docker command failed: {e.stderr}", exc_info=True)
+        logging.error(f"Docker command failed: {e}", exc_info=True)
         cprint(f"Setup failed: {e}", level=1)
         sys.exit(1)
     except Exception as e:
