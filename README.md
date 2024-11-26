@@ -1,7 +1,3 @@
-Here’s the **plain README in Markdown syntax** with proper paragraphing:
-
----
-
 # Install Frappe with PostgreSQL and Multitenancy (Shared Database)
 
 This script simplifies the installation of Frappe using PostgreSQL as the database backend and sets up multitenancy with a shared database.
